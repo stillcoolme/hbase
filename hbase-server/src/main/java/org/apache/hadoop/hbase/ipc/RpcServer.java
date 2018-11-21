@@ -1970,15 +1970,18 @@ public class RpcServer implements RpcServerInterface {
     return this.started;
   }
 
+  // HRegionServer构造方法，然后 RSRpcServices.satrt()调这个
   /** Starts the service.  Must be called before any calls will be handled. */
   @Override
   public synchronized void start() {
+    LOG.info("===== 进来RpcServer.start() Must be called before any calls will be handled , RpcServer启动成功 ！！！！！！！ =====");
     if (started) return;
     AuthenticationTokenSecretManager mgr = createSecretManager();
     if (mgr != null) {
       setSecretManager(mgr);
       mgr.start();
     }
+    // 授权服务管理 启动了才能接收外部的请求。。。
     this.authManager = new ServiceAuthorizationManager();
     HBasePolicyProvider.init(conf, authManager);
     responder.start();

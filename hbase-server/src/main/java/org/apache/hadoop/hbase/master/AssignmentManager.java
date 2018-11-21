@@ -117,7 +117,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.LinkedHashMultimap;
 
 /**
- * Manages and performs region assignment.
+ * Manages and performs region assignment
+ * 对于新建的region，要迁移的region，failed的region server上的region都需要assign到新的region server上。.
  * <p>
  * Monitors ZooKeeper for events related to regions in transition.
  * <p>
@@ -458,6 +459,14 @@ public class AssignmentManager extends ZooKeeperListener {
   /**
    * Called on startup.
    * Figures whether a fresh cluster start of we are joining extant running cluster.
+   * 2. 接下来调用processDeadServersAndRegionsInTransition处理deadServer和正在merge或transition没有完成的region。在这个方法里判断需不需要这次hmaster启动需不需要做一些恢复工作（是不是failover），满足这些条件则认为需要：
+   *     - serverManager里有deadServer；
+   *     - zk的/hbase/region-in-transition节点不空(表示有split或者
+   *       merge还没有完成的region);
+   *     - 步骤11中的deadserver的wal路径下有正在分裂的log
+   *   总之如果不是failover则直接调用assignAllUserRegions将region赋给server。
+   *   是failover，调用processDeadServersAndRecoverLostRegions，处理deadserver是通过ServerCrashProcedure异步完成（这个过程有deadserver的log split和region reassign）。处理in-transition的region是同步完成。
+   *
    * @throws IOException
    * @throws KeeperException
    * @throws InterruptedException
@@ -477,6 +486,11 @@ public class AssignmentManager extends ZooKeeperListener {
     // Scan hbase:meta to build list of existing regions, servers, and assignment
     // Returns servers who have not checked in (assumed dead) that some regions
     // were assigned to (according to the meta)
+    // 获得dead servers。
+    // 这里有两个列表： replicasToClose保存 需要重新assign的region，offlineServers保存dead server。
+    // 方法里扫描meta table处于merge状态的region（HMaster恢复meta table过程中已经恢复了meta region)，
+    // 包括其repicas region加入replicasToClose列表，状态是SPLIT的region加入replicasToClose。
+    // region所在server不在onlineServer里的加入offlineServers，
     Set<ServerName> deadServers = rebuildUserRegions();
 
     // This method will assign all user regions if a clean server startup or

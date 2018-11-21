@@ -30,6 +30,12 @@ import org.apache.hadoop.util.ReflectionUtils;
 public class CoordinatedStateManagerFactory {
 
   /**
+   * 三个参数分别表示:
+   * 1.自定义的类的名字(用于获取相应的class文件),
+   * 2.表示默认的HBase的协同管理类ZKCoordinatedStateManager,
+   * 3.用于验证所获取的class是不是从CoordinatedManager继承的.
+   * 默认的class是通过zookeeper实现CoordinatedManager对HBase的集群进行管理
+   * 然后通过反射机制形成类的实例。
    * Creates consensus provider from the given configuration.
    * @param conf Configuration
    * @return Implementation of  {@link CoordinatedStateManager}

@@ -73,7 +73,7 @@ public class HMasterCommandLine extends ServerCommandLine {
     return USAGE;
   }
 
-
+  // 该方法主要做一些参数的配置与解析,并就命令传入的参数调用不同的处理方法,
   public int run(String args[]) throws Exception {
     Options opt = new Options();
     opt.addOption("localRegionServers", true,
@@ -136,6 +136,7 @@ public class HMasterCommandLine extends ServerCommandLine {
     String command = remainingArgs.get(0);
 
     if ("start".equals(command)) {
+      // 启动Master！ 主要包括的几个核心过程有: RPC服务的创建,zookeeper集群管理类的初始化,各种工作线程的启动等。
       return startMaster();
     } else if ("stop".equals(command)) {
       return stopMaster();
@@ -192,9 +193,10 @@ public class HMasterCommandLine extends ServerCommandLine {
         cluster.startup();
         waitOnMasterThreads(cluster);
       } else {
-        logProcessInfo(getConf());
+        logProcessInfo(getConf()); //将系统的运行配置参数以及JVM的状态存到日志中
         CoordinatedStateManager csm =
           CoordinatedStateManagerFactory.getCoordinatedStateManager(conf);
+        // 具体的HMaster的对象的构造过程：先反射得到HMaster的构造方法，再实例化。
         HMaster master = HMaster.constructMaster(masterClass, conf, csm);
         if (master.isStopped()) {
           LOG.info("Won't bring the Master up as a shutdown is requested");

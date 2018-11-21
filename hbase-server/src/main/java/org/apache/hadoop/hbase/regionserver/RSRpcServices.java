@@ -815,6 +815,7 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
     String name = rs.getProcessName() + "/" + initialIsa.toString();
     // Set how many times to retry talking to another server over HConnection.
     ConnectionUtils.setServerSideHConnectionRetriesConfig(rs.conf, name, LOG);
+
     rpcServer = new RpcServer(rs, name, getServices(),
       bindAddress, // use final bindAddress for this server.
       rs.conf,
@@ -901,6 +902,7 @@ public class RSRpcServices implements HBaseRPCErrorHandler,
   }
 
   void start() {
+    LOG.info("===== RSRpcServices.start() 准备来调用 ipc包的RpcServer.start()方法了。。。。。 =====");
     rpcServer.start();
   }
 

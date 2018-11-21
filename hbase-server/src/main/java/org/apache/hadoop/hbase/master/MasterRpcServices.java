@@ -295,10 +295,12 @@ public class MasterRpcServices extends RSRpcServices
     return RegionServerReportResponse.newBuilder().build();
   }
 
+  //HRegionServer.reportForDuty()通过 rpc 调用该方法。
   @Override
   public RegionServerStartupResponse regionServerStartup(
       RpcController controller, RegionServerStartupRequest request) throws ServiceException {
     // Register with server manager
+    LOG.info("=====Hmaster端： RegionServer通过rpc调用MasterRpcService.regionServerStartup() 进行 register =====");
     try {
       master.checkServiceStarted();
       InetAddress ia = master.getRemoteInetAddress(

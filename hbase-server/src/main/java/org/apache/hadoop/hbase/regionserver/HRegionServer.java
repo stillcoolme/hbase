@@ -494,7 +494,7 @@ public class HRegionServer extends HasThread implements
 
     this.abortRequested = false;
     this.stopped = false;
-
+    // (1)创建RPC的服务
     rpcServices = createRpcServices();
     this.startcode = System.currentTimeMillis();
     String hostName = rpcServices.isa.getHostName();
@@ -527,6 +527,7 @@ public class HRegionServer extends HasThread implements
     // Get fs instance used by this RS.  Do we use checksum verification in the hbase? If hbase
     // checksum verification enabled, then automatically switch off hdfs checksum verification.
     boolean useHBaseChecksum = conf.getBoolean(HConstants.HBASE_CHECKSUM_VERIFICATION, true);
+    // (2)创建文件系统操作实例
     this.fs = new HFileSystem(this.conf, useHBaseChecksum);
     this.rootDir = FSUtils.getRootDir(this.conf);
     this.tableDescriptors = new FSTableDescriptors(
@@ -535,12 +536,15 @@ public class HRegionServer extends HasThread implements
     service = new ExecutorService(getServerName().toShortString());
     spanReceiverHost = SpanReceiverHost.getInstance(getConfiguration());
 
+    // (3)连接Zookeeper集群
     // Some unit tests don't need a cluster, so no zookeeper at all
     if (!conf.getBoolean("hbase.testing.nocluster", false)) {
       // Open connection to zookeeper and set primary watcher
       zooKeeper = new ZooKeeperWatcher(conf, getProcessName() + ":" +
         rpcServices.isa.getPort(), this, canCreateBaseZNode());
 
+      // (4)初始化CoordinatedStateManager对象
+      LOG.info("===== (4)初始化CoordinatedStateManager对象 =====");
       this.csm = (BaseCoordinatedStateManager) csm;
       this.csm.initialize(this);
       this.csm.start();
@@ -548,6 +552,7 @@ public class HRegionServer extends HasThread implements
       tableLockManager = TableLockManager.createTableLockManager(
         conf, zooKeeper, serverName);
 
+      // (5)创建各种集群跟踪和管理对象
       masterAddressTracker = new MasterAddressTracker(getZooKeeper(), this);
       masterAddressTracker.start();
 
@@ -556,9 +561,11 @@ public class HRegionServer extends HasThread implements
     }
     this.configurationManager = new ConfigurationManager();
 
+    // 开启创建RPC的服务  RpcServer.satrt()
     rpcServices.start();
     putUpWebUI();
     this.walRoller = new LogRoller(this, this);
+    // 至此,父类HRegion的实例化过程结束,转入到HMaster拓展部分的实例化。
   }
 
   protected void login(UserProvider user, String host) throws IOException {
@@ -666,6 +673,7 @@ public class HRegionServer extends HasThread implements
   /**
    * All initialization needed before we go register with Master.
    *
+   *
    * @throws IOException
    * @throws InterruptedException
    */
@@ -681,9 +689,12 @@ public class HRegionServer extends HasThread implements
       }
       this.pauseMonitor = new JvmPauseMonitor(conf);
       pauseMonitor.start();
-
+      // 调用 initializeZooKeeper();主要做：
+      // 1. 等待master起来，也就是监控zookeeper的/hbase/master节点有数据(这个节点的位置由zookeeper.znode.master配置)(这个节点的数据由master设置为自己的host:port)；
+      // 2. 等待整个集群起来，默认监控/hbase/running节点(由zookeeper.znode.state配置)，这个节点由master收集到各个region server状态后设置成时间值。
       initializeZooKeeper();
       if (!isStopped() && !isAborted()) {
+        // 会启动很多服务线程池，在HRegionServer和运行期间提供服务
         initializeThreads();
       }
     } catch (Throwable t) {
@@ -771,15 +782,24 @@ public class HRegionServer extends HasThread implements
 
   private void initializeThreads() throws IOException {
     // Cache flushing thread.
+    // 负责刷新region的memstore，MemStroeFlusher内部持有一些FlushHandler
+    // (持续运行的线程，个数由配置hbase.hstore.flusher.count指定，默认2个)来完成region的memstore的flush。
     this.cacheFlusher = new MemStoreFlusher(conf, this);
 
     // Compaction thread
+    // CompactSplitThread，在它内部创建四个线程池
+    // 分别负责region的minor compact， major compact，split和merge。
     this.compactSplitThread = new CompactSplitThread(this);
 
     // Background thread to check for compactions; needed if region has not gotten updates
     // in a while. It will take care of not checking too frequently on store-by-store basis.
+    // CompactionChecker，周期性（周期由base.server.thread.wakefrequency指定，默认10000ms）的检查所有region的所有HStore看看是否需要compaction，
+    // 需要compact的将通知compactSplitThread完成。这是ScheduledChore的子类，因此会有ChoreService调度。
     this.compactionChecker = new CompactionChecker(this, this.threadWakeFrequency, this);
+    // 周期性检查所有region的所有HMemStore是否需要flush。需要通知MemStoreFlusher完成。该类也是ScheduledChore的子类。
     this.periodicFlusher = new PeriodicMemstoreFlusher(this.threadWakeFrequency, this);
+    // Leases，相当于租约管理器，管理所有租约（Lease）的申请、续租以及租约到期。Leases实现HasThread，是一个持续运行的daemon线程，
+    // 其运行期间，检查所有lease，对于过期的lease，激活lease.getListener().leaseExpired()
     this.leases = new Leases(this.threadWakeFrequency);
 
     // Create the thread to clean the moved regions list
@@ -790,19 +810,28 @@ public class HRegionServer extends HasThread implements
       nonceManagerChore = this.nonceManager.createCleanupChore(this);
     }
 
-    // Setup the Quota Manager
+    // Setup the Quota(引用） Manager 管理namespace，user，table粒度的quota。
     rsQuotaManager = new RegionServerQuotaManager(this);
 
     // Setup RPC client for master communication
+    // 创建RpcClient，默认创建org.apache.hadoop.hbase.ipc.RpcClientImpl这个，
+    // 这是直接使用java nio实现，可以通过hbase.rpc.client.impl配置修改rpcclient。
     rpcClient = RpcClientFactory.createClient(conf, clusterId, new InetSocketAddress(
         rpcServices.isa.getAddress(), 0));
 
     int storefileRefreshPeriod = conf.getInt(
         StorefileRefresherChore.REGIONSERVER_STOREFILE_REFRESH_PERIOD
       , StorefileRefresherChore.DEFAULT_REGIONSERVER_STOREFILE_REFRESH_PERIOD);
+    // StorefileRefresherChore，继承至ScheduledChore，
+    // 负责当前HRegionServer里secondary region（replica id不为0）的HStore和primary region的同步的
+    // （primary region的write操作会导致hfile发生改变，secondary需要报primary保持同步）。
+    // 同步周期由hbase.regionserver.storefile.refresh.period设置，0表示不同步。
     if (storefileRefreshPeriod > 0) {
       this.storefileRefresher = new StorefileRefresherChore(storefileRefreshPeriod, this, this);
     }
+    // registerConfigurationObservers，内部调用configurationManager的regist方法
+    // 注册一些需要在配置发送动态修改时一并修改内部状态的服务，目前注册了CompactSplitThread，RSRpcServices以及HRegionServer，
+    // 也就是说和这些服务相关的配置改变时，可以动态的感知。
     registerConfigurationObservers();
   }
 
@@ -818,6 +847,9 @@ public class HRegionServer extends HasThread implements
   public void run() {
     try {
       // Do pre-registration initializations; zookeeper, lease threads, etc.
+      // 向HMaster注册之前完成一些初始化工作
+      // （注册并不是向HMaster发消息，而是在zookeeper的/hbase/rs
+      // 路径下创建包含当前region server信息的节点，HMaster监听这个节点）
       preRegistrationInitialization();
     } catch (Throwable e) {
       abort("Fatal exception during initialization", e);
@@ -827,20 +859,30 @@ public class HRegionServer extends HasThread implements
       if (!isStopped() && !isAborted()) {
         ShutdownHook.install(conf, fs, this, Thread.currentThread());
         // Set our ephemeral znode up in zookeeper now we have a name.
+        // 在zookeeper /hbase/rs路径（子路径rs由zookeeper.znode.rs设置）下创建当前regionserver名的节点,
         createMyEphemeralNode();
         // Initialize the RegionServerCoprocessorHost now that our ephemeral
         // node was created, in case any coprocessors want to use ZooKeeper
+        // RegionServerCoprocessorHost创建时会根据用户的配置文件选择加载的coprocessor，
+        // CoprocessorHost提供coprocessor的执行环境，除了RegionServerCoprocessorHost，还有RegionCoprocessorHost，WALCoprocessorHost，
+        // RegionServer这一级容许coprocessor在region merge以及region server关闭前后做一些工作。
+        // 这一级的coprocessor通过hbase.coprocessor.enabled启用； 配置hbase.coprocessor.regionserver.classes，设置为默认加载的coprocessor，使用，分割类。
         this.rsHost = new RegionServerCoprocessorHost(this, this.conf);
       }
 
-      // Try and register with the Master; tell it we are here.  Break if
-      // server is stopped or the clusterup flag is down or hdfs went wacky.
+      // Try and register with the Master; tell it we are here.
+      // Break if server is stopped or the clusterup flag is down or hdfs went wacky.
       while (keepLooping()) {
+        // !!!!!!!!
+        // 不停调用 reportForDuty 向master汇报 region server启动成功。
+        // 通过rpc访问master的MasterRpcServices#regionServerStartup，该方法最终会走到serverManager）
         RegionServerStartupResponse w = reportForDuty();
         if (w == null) {
           LOG.warn("reportForDuty failed; sleeping and then retrying.");
           this.sleeper.sleep();
         } else {
+          // 在成功返回后创建WALFactory实例，启动各种服务线程（前面提到的ExecutorService）、各种前面提到的chore service、集群间复制service（）堆内存管理器等等。
+          // 通过设置base.replication为true启动集群间wal log同步，默认为true。
           handleReportForDutyResponse(w);
           break;
         }
@@ -1301,10 +1343,8 @@ public class HRegionServer extends HasThread implements
 
       startServiceThreads();
       startHeapMemoryManager();
-      LOG.info("Serving as " + this.serverName +
-        ", RpcServer on " + rpcServices.isa +
-        ", sessionid=0x" +
-        Long.toHexString(this.zooKeeper.getRecoverableZooKeeper().getSessionId()));
+      LOG.info("Serving as " + this.serverName + ", RpcServer on " + rpcServices.isa +
+        ", sessionid=0x" + Long.toHexString(this.zooKeeper.getRecoverableZooKeeper().getSessionId()));
 
       // Wake up anyone waiting for this server to online
       synchronized (online) {
@@ -2151,14 +2191,15 @@ public class HRegionServer extends HasThread implements
     RegionServerStartupResponse result = null;
     try {
       rpcServices.requestCount.set(0);
-      LOG.info("reportForDuty to master=" + masterServerName + " with port="
-        + rpcServices.isa.getPort() + ", startcode=" + this.startcode);
+      LOG.info("===== reportForDuty to master=" + masterServerName + " with port="
+        + rpcServices.isa.getPort() + ", startcode=" + this.startcode + " =====");
       long now = EnvironmentEdgeManager.currentTime();
       int port = rpcServices.isa.getPort();
       RegionServerStartupRequest.Builder request = RegionServerStartupRequest.newBuilder();
       request.setPort(port);
       request.setServerStartCode(this.startcode);
       request.setServerCurrentTime(now);
+      LOG.info("=====rs端： RegionServer通过rpc调用MasterRpcService.regionServerStartup() 进行 register =====");
       result = this.rssStub.regionServerStartup(null, request.build());
     } catch (ServiceException se) {
       IOException ioe = ProtobufUtil.getRemoteException(se);

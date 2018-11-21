@@ -344,6 +344,7 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
    */
   public HMaster(final Configuration conf, CoordinatedStateManager csm)
       throws IOException, KeeperException, InterruptedException {
+    // 先调用父类HRegionServer的构造函数，做了挺多事： 启动RPC服务，连接zk集群，创建fs操作实例
     super(conf, csm);
     this.rsFatals = new MemoryBoundedLogMessageBuffer(
       conf.getLong("hbase.master.buffer.for.rs.fatals", 1*1024*1024));
@@ -389,10 +390,16 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
         Threads.setDaemonThreadRunning(clusterStatusPublisherChore.getThread());
       }
     }
+
+    // 激活一个工作HMaster
     activeMasterManager = new ActiveMasterManager(zooKeeper, this.serverName, this);
+    // 启动Jetty服务
     int infoPort = putUpJettyServer();
+    // 1. 首先在Zookeeper中添加一个backupZNode,等到变成activeMaster 之后显式删除该节点。。
+    // 2. 这里面激活之后,调用 finishActiveMasterInitialization(status);！！！！ 完成Master相应的工作线程的启动过程
     startActiveMasterManager(infoPort);
   }
+
 
   // return the actual infoPort, -1 means disable info server.
   private int putUpJettyServer() throws IOException {
@@ -528,6 +535,28 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
   }
 
   /**
+   * 1. 创建balancer， 用于平衡regionserver管理的region数量，不至于regionserver负载不均衡, 默认使用StochasticLoadBalancer作为负载均衡器。
+   * 用户可以实现接口LoadBalancer自定义均衡器，通过配置hbase.master.loadbalancer.class使其生效，balancer只负责安一定策略返回region应该放在哪个regionserver上（RegionPlan），但是具体的发送rpc给region server打开region的操作是有assignManager负责。
+   *
+   * 2. normalizer，用于region的split和merge使得一个table的所有region的大小趋于均衡，默认使用SimpleRegionNormalizer， 用户可以实现接口RegionNormalizer自定义normalizer，通过配置hbase.master.normalizer.class引入。
+   *
+   * 3. 创建并启动loadBalancerTracker，它监听zk的/hbase/balancer节点获知当前cluster是否容许尽心load balance。
+   *
+   * 4. 创建并启动regionNormalizerTracker，它监听zk的/hbase/normalizer节点获知当前cluster是否容许normalize。
+   *
+   * 5. 创建并启动splitOrMergeTracker，它监听zk的/hbase/switch节点获知当前cluster是否容许split或者merge，我怀疑只有hbase.assignment.usezk设置为false（表示merge，split不使用zk管理状态）时才起作用。否则就算你disable split也不会生效。
+   *
+   * 6. 创建assignmentManager并注册到zkListener,开始监听/hbase/region-in-transition节点,还负责命令region server打开region
+   *
+   * 7. 创建并启动regionServerTracker，监听/hbase/rs获知hregion server的生死
+   *
+   * 8.创建并启动drainingServerTracker， 监听/hbase/draining节点
+   *
+   * 9. 通过clusterStatusTracker获得/hbase/running的data，由于当前hmaster成为主master，将data设置为当前hmaster的信息。只要data不为空，其他节点就会判断当前cluster是正常运行的。
+   *
+   * 10. 创建snapshotManager
+   *
+   * 11. 创建mpmHost，类MasterProcedureManagerHost的实例，后面会降到hmaster上的table schema创建修改都是通过Procedure实现的，mpmHost提供Procedure的运行环境。
    * Initialize all ZK based system trackers.
    * @throws IOException
    * @throws InterruptedException
@@ -608,6 +637,7 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
 
     this.masterActiveTime = System.currentTimeMillis();
     // TODO: Do this using Dependency Injection, using PicoContainer, Guice or Spring.
+    // 1. 创建fileSystemManager，包装hdfs。
     this.fileSystemManager = new MasterFileSystem(this, this);
 
     // enable table descriptors cache
@@ -616,19 +646,25 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     // warm-up HTDs cache on master initialization
     if (preLoadTableDescriptors) {
       status.setStatus("Pre-loading table descriptors");
+      // 2. 加载table的schema信息，并缓存。
       this.tableDescriptors.getAll();
     }
 
     // publish cluster ID
+    LOG.info("===== Publishing Cluster ID in ZooKeeper: " + fileSystemManager.getClusterId() + " =====");
     status.setStatus("Publishing Cluster ID in ZooKeeper");
-    ZKClusterId.setClusterId(this.zooKeeper, fileSystemManager.getClusterId());
-    this.serverManager = createServerManager(this, this);
 
+    ZKClusterId.setClusterId(this.zooKeeper, fileSystemManager.getClusterId());
+
+    LOG.info("===== createServerManager() 创建ServerManager，管理所有hregion server =====");
+    this.serverManager = createServerManager(this, this);
+    // 4. ClusterConnection提供访问cluster里所有server的方式。
     setupClusterConnection();
 
-    // Invalidate all write locks held previously
+    // Invalidate all write locks held previously 将zk上所有没有释放的write lock清除掉。
     this.tableLockManager.reapWriteLocks();
 
+    // 启动所有zk系统跟踪者 ！！做了挺多事。。。
     status.setStatus("Initializing ZK system trackers");
     initializeZKBasedSystemTrackers();
 
@@ -636,15 +672,19 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     status.setStatus("Initializing master coprocessors");
     this.cpHost = new MasterCoprocessorHost(this, this.conf);
 
-    // start up all service threads.
+    // start up all service threads.  启动HMaster上的一些专门的工作服务线程池，比如用来打开region的，关闭region的
     status.setStatus("Initializing master service threads");
     startServiceThreads();
 
     // Wake up this server to check in
     sleeper.skipSleepCycle();
 
-    // Wait for region servers to report in
+    // Wait for region servers to report in ！！！！！！！！！！
     this.serverManager.waitForRegionServers(status);
+    // region server在启动时的 run()方法内也会不停调用 reportForDuty 向master汇报（通过rpc访问master的 MasterRpcServices#regionServerStartup，该方法最终会走到serverManager）
+    // 如果master准备好了，region server收到master正常回复，就不再调用reportForDuty。
+
+
     // Check zk for region servers that are up but didn't register
     for (ServerName sn: this.regionServerTracker.getOnlineServers()) {
       // The isServerOnline check is opportunistic, correctness is handled inside
@@ -654,9 +694,14 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
       }
     }
 
+    // 接下来是恢复meta region的过程
     // get a list for previously failed RS which need log splitting work
     // we recover hbase:meta region servers inside master initialization and
     // handle other failed servers in SSH in order to start up master node ASAP
+
+    // 1. 获得认为没有启动或启动失败的region server。
+    // 逻辑是这样的：/hbase/WALs下每一个region server都有一个子路径，通过serverManager !!! 获得注册成功的onlineServers，
+    // 从/hbase/WALs中解析出所有的server，不在onlineServer中即认为失败
     Set<ServerName> previouslyFailedServers = this.fileSystemManager
         .getFailedServersFromLogFolders();
 
@@ -664,8 +709,10 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     this.fileSystemManager.removeStaleRecoveringRegionsFromZK(previouslyFailedServers);
 
     // log splitting for hbase:meta server
+    // 获得meta region 所在的region server，原理就是从zookeeper的/hbase/meta-region-server获得之前meta region所在的server。
     ServerName oldMetaServerLocation = metaTableLocator.getMetaRegionLocation(this.getZooKeeper());
     if (oldMetaServerLocation != null && previouslyFailedServers.contains(oldMetaServerLocation)) {
+      // 获得的 meta region所在的server在失败 server 列表中，则认为meta region需要恢复，
       splitMetaLogBeforeAssignment(oldMetaServerLocation);
       // Note: we can't remove oldMetaServerLocation from previousFailedServers list because it
       // may also host user regions
@@ -699,15 +746,19 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
 
     // Make sure meta assigned before proceeding.
     status.setStatus("Assigning Meta Region");
+    // meta region最终还是要通过assignMeta将 meta region 给某个online的 region server管理。
     assignMeta(status, previouslyFailedMetaRSs);
     // check if master is shutting down because above assignMeta could return even hbase:meta isn't
     // assigned when master is shutting down
     if(isStopped()) return;
 
     status.setStatus("Submitting log splitting work for previously failed region servers");
-    // Master has recovered hbase:meta region server and we put
-    // other failed region servers in a queue to be handled later by SSH
+    // Master has recovered hbase:meta region server
+    // and we put other failed region servers in a queue to be handled later by SSH ！！！！！！
+    // 接下来是其他的 非meta region 所在的server的恢复 (dead server?)
     for (ServerName tmpServer : previouslyFailedServers) {
+      // 将这些server保存起来，master不会等待他们都恢复完再继续(因为这一过程涉及到wal log的split以及region的assign，会比较慢)。
+      // 在master启动初始化过程中，只会做meta region的恢复工作。
       this.serverManager.processDeadServer(tmpServer, true);
     }
 
@@ -718,27 +769,47 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
       MetaMigrationConvertingToPB.updateMetaIfNecessary(this);
     }
 
-    // Fix up assignment manager status
+    // Fix up assignment manager （负责 region到 region server的assign）status
     status.setStatus("Starting assignment manager");
     this.assignmentManager.joinCluster();
 
     //set cluster status again after user regions are assigned
     this.balancer.setClusterStatus(getClusterStatus());
 
+
+    //当配置数量的 regionservers 都加入集群之后集群的初始化工作就完成了,
+    // 接下来的一个重量级组件就是 LoadBalancer,其主要负责regions在HRegions之间的分配
+    //检查Hbase的meta是否已经分配,
+    //最后启动几个后台线程进行相应的监控处理,至此HMaster的初始化工作就完全完成了
     // Start balancer and meta catalog janitor after meta and regions have
     // been assigned.
     status.setStatus("Starting balancer and catalog janitor");
-    this.clusterStatusChore = new ClusterStatusChore(this, balancer);
+    // clusterStatusChore通过HMaster#getClusterStatus获得clusterStatus， clusterMaster包含：
+      // - 从zk获得的backup master
+      // - 从assignmentManager获得的in-transition的region
+      // - 从masterCoprocessorHost获得的注册到master的coprocessor
+      // - 从serverManager获得的dead|online server以及online server的ServerLoad的这些信息.
+    // 获得的clusterStatus被设置到loadBalancer的成员上，loadBalancer使用这些信息来决定region到server的assign。
+    this.clusterStatusChore = new ClusterStatusChore(this, balancer);  // scheduledChore由ChoreService定期调度执行。
     Threads.setDaemonThreadRunning(clusterStatusChore.getThread());
+    // BalancerChore调用Hmaster#balance,
+    // 最终是通过loadBalancer获得RegionPlan(一个plan包括需要移动的region info，源region server和目的region server)。
+    // loadBalancer只负责根据当前的 clusterStatus 以一定的策略生成RegionPlan，
+    // region的迁移则是由assignmentManager根据plan完成，
     this.balancerChore = new BalancerChore(this);
     Threads.setDaemonThreadRunning(balancerChore.getThread());
+    // 门警，对于已经被merge成一个region m的region a,b和对于split成两个region c，d的region p, 门警定期扫描meta table，
+    // 如果 m 不再持有a，b的reference file， c，d 不再持有 p 的reference file，那么就可以完全移除a,b 或者p。
+    //注：并不是真正的删除，而是将region的HFile移动到/hbase/archive/{tableName}/{encoded-region-name}路径下面
     this.catalogJanitorChore = new CatalogJanitor(this, this);
     Threads.setDaemonThreadRunning(catalogJanitorChore.getThread());
 
     status.setStatus("Starting namespace manager");
+    // 创建TableNamespaceManager，这是创建、访问、操作namespace这张表的帮助类。
     initNamespace();
 
     status.setStatus("Starting quota manager");
+    // 创建MasterQuotaManager，这是创建、访问、操作quota这张表的的帮助类
     initQuotaManager();
 
     if (this.cpHost != null) {
@@ -907,6 +978,14 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
       catalogJanitorChore.getEnabled() : false;
   }
 
+  /**
+   * 判断recoveryMode是 LOG_REPLAY还是 LOG_SPLITTING，
+   * 前者将meta region放到zk的/hbase/recovering-regions下,
+   * 后者的meta region所在的failed region server的 wal log 做split log。
+   *
+   * @param currentMetaServer
+   * @throws IOException
+   */
   private void splitMetaLogBeforeAssignment(ServerName currentMetaServer) throws IOException {
     if (RecoveryMode.LOG_REPLAY == this.getMasterFileSystem().getLogRecoveryMode()) {
       // In log replay mode, we mark hbase:meta region as recovering in ZK
@@ -915,6 +994,7 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
       this.fileSystemManager.prepareLogReplay(currentMetaServer, regions);
     } else {
       // In recovered.edits mode: create recovered edits file for hbase:meta server
+      // 进入 recovered.edits mode 模式？ 为 hbase:meta server 创建 recovered edits file
       this.fileSystemManager.splitMetaLog(currentMetaServer);
     }
   }
@@ -1022,7 +1102,7 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
         .getFileSystem(), archiveDir);
     Threads.setDaemonThreadRunning(hfileCleaner.getThread(),
       getServerName().toShortString() + ".archivedHFileCleaner");
-
+    LOG.info("=====finishActiveMasterInitialization().startServiceThreads() Master启动成功， 设置serviceStarted = true; =====");
     serviceStarted = true;
     if (LOG.isTraceEnabled()) {
       LOG.trace("Started service threads");
@@ -1433,6 +1513,8 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     LOG.warn(message);
   }
 
+  // 1. 在startActiveMasterManager中首先在Zookeeper中添加一个backupZNode,等到变成activeMaster 之后显式删除该节点.
+  // 2. 激活Master之后,调用 finishActiveMasterInitialization(status);完成Master相应的工作线程的启动过程
   private void startActiveMasterManager(int infoPort) throws KeeperException {
     String backupZNode = ZKUtil.joinZNode(
       zooKeeper.backupMasterAddressesZNode, serverName.toString());
@@ -1457,13 +1539,12 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     Threads.setDaemonThreadRunning(new Thread(new Runnable() {
       @Override
       public void run() {
+        LOG.info("===== Start a thread to try to become the active master !!!!!!!!!! =====");
         int timeout = conf.getInt(HConstants.ZK_SESSION_TIMEOUT,
           HConstants.DEFAULT_ZK_SESSION_TIMEOUT);
         // If we're a backup master, stall until a primary to writes his address
-        if (conf.getBoolean(HConstants.MASTER_TYPE_BACKUP,
-            HConstants.DEFAULT_MASTER_TYPE_BACKUP)) {
-          LOG.debug("HMaster started in backup mode. "
-            + "Stalling until master znode is written.");
+        if (conf.getBoolean(HConstants.MASTER_TYPE_BACKUP, HConstants.DEFAULT_MASTER_TYPE_BACKUP)) {
+          LOG.debug("HMaster started in backup mode. " + "Stalling until master znode is written.");
           // This will only be a minute or so while the cluster starts up,
           // so don't worry about setting watches on the parent znode
           while (!activeMasterManager.hasActiveMaster()) {
@@ -1474,8 +1555,10 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
         }
         MonitoredTask status = TaskMonitor.get().createStatus("Master startup");
         status.setDescription("Master startup");
+
         try {
           if (activeMasterManager.blockUntilBecomingActiveMaster(timeout, status)) {
+            // 成为activeMaster后继续完成Master的初始化
             finishActiveMasterInitialization(status);
           }
         } catch (Throwable t) {
@@ -2033,9 +2116,12 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
    */
   public static HMaster constructMaster(Class<? extends HMaster> masterClass,
       final Configuration conf, final CoordinatedStateManager cp)  {
+    // 这里使用Configuration和CoordinatedStateManager为参数的构造函数进行构造。
+    // 但是这里为什么需要使用反射??是为了更好的通过传入类型信息增加程序的可拓展性吗,可是如果增加可扩展性的化还是需要修改调用之处的源代码啊?
     try {
       Constructor<? extends HMaster> c =
         masterClass.getConstructor(Configuration.class, CoordinatedStateManager.class);
+      // 调用HMaster(conf, cp)
       return c.newInstance(conf, cp);
     } catch (InvocationTargetException ite) {
       Throwable target = ite.getTargetException() != null?
@@ -2055,6 +2141,7 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
    */
   public static void main(String [] args) {
     VersionInfo.logVersion();
+    // 实例化一个HMasterCommandLine，执行父类的doMain方法。
     new HMasterCommandLine(HMaster.class).doMain(args);
   }
 

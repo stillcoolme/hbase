@@ -123,6 +123,8 @@ public abstract class ServerCommandLine extends Configured implements Tool {
    */
   public void doMain(String args[]) {
     try {
+      // 执行ToolRunner的run() ，传入this，指的是HMasterCommandLine。
+      // 该run方法进行了一些命令参数的解析并调用 HMaserCommandline 所实现的run方法。
       int ret = ToolRunner.run(HBaseConfiguration.create(), this, args);
       if (ret != 0) {
         System.exit(ret);

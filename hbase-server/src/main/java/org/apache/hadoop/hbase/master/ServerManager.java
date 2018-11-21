@@ -856,13 +856,14 @@ public class ServerManager {
     return admin;
   }
 
+  // HMaster的 finishActiveMasterInitialization()调用了。。。
   /**
    * Wait for the region servers to report in.
    * We will wait until one of this condition is met:
    *  - the master is stopped
    *  - the 'hbase.master.wait.on.regionservers.maxtostart' number of
    *    region servers is reached
-   *  - the 'hbase.master.wait.on.regionservers.mintostart' is reached AND
+   *  - the 'hbase.master.wait.on.regionservers.mintostart' is reached  默认为1 AND
    *   there have been no new region server in for
    *      'hbase.master.wait.on.regionservers.interval' time AND
    *   the 'hbase.master.wait.on.regionservers.timeout' is reached
@@ -908,6 +909,7 @@ public class ServerManager {
     long lastCountChange = startTime;
     int count = countOfRegionServers();
     int oldCount = 0;
+
     while (!this.master.isStopped() && count < maxToStart
         && (lastCountChange+interval > now || timeout > slept || count < minToStart)) {
       // Log some info at every interval time or if there is a change
