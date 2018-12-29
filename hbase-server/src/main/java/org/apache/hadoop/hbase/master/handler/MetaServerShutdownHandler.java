@@ -68,7 +68,9 @@ public class MetaServerShutdownHandler extends ServerShutdownHandler {
         (this.services.getMasterFileSystem().getLogRecoveryMode() == RecoveryMode.LOG_REPLAY);
       try {
         if (this.shouldSplitWal) {
+
           LOG.info("Splitting hbase:meta logs for " + serverName);
+          //当设置了distributedLogReplay为true，则使用masterfilesystem的prepareLogReplay方法
           if (distributedLogReplay) {
             Set<HRegionInfo> regions = new HashSet<HRegionInfo>();
             regions.add(HRegionInfo.FIRST_META_REGIONINFO);

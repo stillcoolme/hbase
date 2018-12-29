@@ -1340,7 +1340,7 @@ public class HRegionServer extends HasThread implements
       this.walFactory = setupWALAndReplication();
       // Init in here rather than in constructor after thread name has been set
       this.metricsRegionServer = new MetricsRegionServer(new MetricsRegionServerWrapperImpl(this));
-
+      // 以前在这里出过大事啊！！！
       startServiceThreads();
       startHeapMemoryManager();
       LOG.info("Serving as " + this.serverName + ", RpcServer on " + rpcServices.isa +
@@ -1661,7 +1661,7 @@ public class HRegionServer extends HasThread implements
   private void startServiceThreads() throws IOException {
     // Start executor services
     this.service.startExecutorService(ExecutorType.RS_OPEN_REGION,
-      conf.getInt("hbase.regionserver.executor.openregion.threads", 3));
+      conf.getInt("hbase.regionserver.executor.openregion.threads", 3));  // 用来打开Region的线程数
     this.service.startExecutorService(ExecutorType.RS_OPEN_META,
       conf.getInt("hbase.regionserver.executor.openmeta.threads", 1));
     this.service.startExecutorService(ExecutorType.RS_CLOSE_REGION,

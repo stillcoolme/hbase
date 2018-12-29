@@ -110,6 +110,7 @@ public class ServerShutdownHandler extends EventHandler {
 
   @Override
   public void process() throws IOException {
+    LOG.info("===== 进入ServerShutdownHandler的 process() ====");
     boolean hasLogReplayWork = false;
     final ServerName serverName = this.serverName;
     try {
@@ -201,14 +202,12 @@ public class ServerShutdownHandler extends EventHandler {
 
       try {
         if (this.shouldSplitWal) {
-          if (distributedLogReplay) {
-            LOG.info("Mark regions in recovery for crashed server " + serverName +
-              " before assignment; regions=" + hris);
+          if (distributedLogReplay) {  // replay，是让原来的regionserver自己进行split log的恢复。
+            LOG.info("Mark regions in recovery for crashed server " + serverName + " before assignment; regions=" + hris);
             MasterFileSystem mfs = this.services.getMasterFileSystem();
             mfs.prepareLogReplay(serverName, hris);
           } else {
-            LOG.info("Splitting logs for " + serverName +
-              " before assignment; region count=" + (hris == null ? 0 : hris.size()));
+            LOG.info("===== Splitting logs for " + serverName + " before assignment; region count=" + (hris == null ? 0 : hris.size()));
             this.services.getMasterFileSystem().splitLog(serverName);
           }
           am.getRegionStates().logSplit(serverName);

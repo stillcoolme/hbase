@@ -161,6 +161,7 @@ MultiRowMutationProcessorResponse> {
     }
   }
 
+  // The hook to be executed after process() and applying the Mutations to region.
   @Override
   public void postProcess(HRegion region, WALEdit walEdit, boolean success) throws IOException {
     RegionCoprocessorHost coprocessorHost = region.getCoprocessorHost();

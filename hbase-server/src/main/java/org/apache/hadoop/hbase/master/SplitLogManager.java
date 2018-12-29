@@ -209,6 +209,7 @@ public class SplitLogManager {
   }
 
   /**
+   * 所有RS的log files都被处理了 或者  错误出现在RS上 这个caller才会阻塞。
    * The caller will block until all the log files of the given region server have been processed -
    * successfully split or an error is encountered - by an available worker region server. This
    * method must only be called after the region servers have been brought online.
@@ -266,10 +267,12 @@ public class SplitLogManager {
       // metrics that it drives will also be under-reported.
       totalSize += lf.getLen();
       String pathToLog = FSUtils.removeRootPath(lf.getPath(), conf);
+      //split log任务添加到zk上, 将path放入zk等待rs处理
       if (!enqueueSplitTask(pathToLog, batch)) {
         throw new IOException("duplicate log split scheduled for " + lf.getPath());
       }
     }
+    //等待zk上的split log任务都完成
     waitForSplittingCompletion(batch, status);
     // remove recovering regions
     if (filter == MasterFileSystem.META_FILTER /* reference comparison */) {
@@ -277,8 +280,9 @@ public class SplitLogManager {
       // meta or user regions but won't for both( we could have mixed situations in tests)
       isMetaRecovery = true;
     }
+    //删除已经恢复的regionserver
     removeRecoveringRegions(serverNames, isMetaRecovery);
-
+    //有失败的split log抛出异常
     if (batch.done != batch.installed) {
       batch.isDead = true;
       SplitLogCounters.tot_mgr_log_split_batch_err.incrementAndGet();
@@ -327,6 +331,7 @@ public class SplitLogManager {
         ((BaseCoordinatedStateManager) server.getCoordinatedStateManager())
             .getSplitLogManagerCoordination().prepareTask(taskname);
     Task oldtask = createTaskIfAbsent(task, batch);
+    //生成split node，等待RS的splitlogwork工作
     if (oldtask == null) {
       // publish the task in the coordination engine
       ((BaseCoordinatedStateManager) server.getCoordinatedStateManager())

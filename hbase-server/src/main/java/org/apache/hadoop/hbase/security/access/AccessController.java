@@ -223,6 +223,7 @@ public class AccessController extends BaseMasterAndRegionObserver
   }
 
   /**
+   * 访问控制列表（Access Control List，ACL） 是路由器和交换机接口的指令列表，用来控制端口进出的数据包。
    * Writes all table ACLs for the tables in the given Map up into ZooKeeper
    * znodes.  This is called to synchronize ACL changes following {@code _acl_}
    * table updates.

@@ -700,16 +700,16 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     // handle other failed servers in SSH in order to start up master node ASAP
 
     // 1. 获得认为没有启动或启动失败的region server。
-    // 逻辑是这样的：/hbase/WALs下每一个region server都有一个子路径，通过serverManager !!! 获得注册成功的onlineServers，
-    // 从/hbase/WALs中解析出所有的server，不在onlineServer中即认为失败
+    // 逻辑是这样的：/hbase/WALs下每一个region server都有一个子路径，通过 serverManager !!! 获得注册成功的onlineServers，
+    // 从/hbase/WALs中解析出所有的server，不在onlineServer中但是又有wallog dir即认为失败
     Set<ServerName> previouslyFailedServers = this.fileSystemManager
         .getFailedServersFromLogFolders();
 
-    // remove stale recovering regions from previous run
+    // remove stale recovering regions from previous run  删除正在恢复的region
     this.fileSystemManager.removeStaleRecoveringRegionsFromZK(previouslyFailedServers);
 
-    // log splitting for hbase:meta server
-    // 获得meta region 所在的region server，原理就是从zookeeper的/hbase/meta-region-server获得之前meta region所在的server。
+    // log splitting for hbase:meta server  先修复meta表
+    // 获得meta region 所在的 region server，原理就是从zookeeper的/hbase/meta-region-server获得之前meta region所在的server。
     ServerName oldMetaServerLocation = metaTableLocator.getMetaRegionLocation(this.getZooKeeper());
     if (oldMetaServerLocation != null && previouslyFailedServers.contains(oldMetaServerLocation)) {
       // 获得的 meta region所在的server在失败 server 列表中，则认为meta region需要恢复，
@@ -755,8 +755,9 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     status.setStatus("Submitting log splitting work for previously failed region servers");
     // Master has recovered hbase:meta region server
     // and we put other failed region servers in a queue to be handled later by SSH ！！！！！！
-    // 接下来是其他的 非meta region 所在的server的恢复 (dead server?)
+    LOG.info("接下来是其他的 非meta region 所在的dead server的恢复");
     for (ServerName tmpServer : previouslyFailedServers) {
+      // 恢复非meta表的入口: processDeadServer任务提交到 ServerShutdownHandler到线程池，在process里进行split log。
       // 将这些server保存起来，master不会等待他们都恢复完再继续(因为这一过程涉及到wal log的split以及region的assign，会比较慢)。
       // 在master启动初始化过程中，只会做meta region的恢复工作。
       this.serverManager.processDeadServer(tmpServer, true);
@@ -777,10 +778,10 @@ public class HMaster extends HRegionServer implements MasterServices, Server {
     this.balancer.setClusterStatus(getClusterStatus());
 
 
-    //当配置数量的 regionservers 都加入集群之后集群的初始化工作就完成了,
+    // 当配置数量的 regionservers 都加入集群之后集群的初始化工作就完成了,
     // 接下来的一个重量级组件就是 LoadBalancer,其主要负责regions在HRegions之间的分配
-    //检查Hbase的meta是否已经分配,
-    //最后启动几个后台线程进行相应的监控处理,至此HMaster的初始化工作就完全完成了
+    // 检查Hbase的meta是否已经分配,
+    // 最后启动几个后台线程进行相应的监控处理,至此HMaster的初始化工作就完全完成了
     // Start balancer and meta catalog janitor after meta and regions have
     // been assigned.
     status.setStatus("Starting balancer and catalog janitor");

@@ -611,6 +611,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
   private boolean splitRequest;
   private byte[] explicitSplitPoint = null;
 
+  // 每个Region包含一个Memstore，维护一个MultiVersionConsistencyControl对象。
   private final MultiVersionConsistencyControl mvcc =
       new MultiVersionConsistencyControl();
 
@@ -2804,6 +2805,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
 
     long currentNonceGroup = HConstants.NO_NONCE, currentNonce = HConstants.NO_NONCE;
     WALEdit walEdit = new WALEdit(isInReplay);
+    // mvcc
     MultiVersionConsistencyControl.WriteEntry w = null;
     long txid = 0;
     boolean doRollBackMemstore = false;
@@ -5170,6 +5172,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
       if (outResults.isEmpty()) {
         // Usually outResults is empty. This is true when next is called
         // to handle scan or get operation.
+        // 把结果存到outResults当中
         returnResult = nextInternal(outResults, limit);
       } else {
         List<Cell> tmpList = new ArrayList<Cell>();
@@ -6060,12 +6063,14 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
   // HBASE-880
   //
   /**
+   * 执行get数据的操作
    * @param get get object
    * @return result
    * @throws IOException read exceptions
    */
   public Result get(final Get get) throws IOException {
     checkRow(get.getRow(), "Get");
+    // 先检查get的row是否在这个region里面，然后检查列族，如果没有的话，它会根据表定义给补全的
     // Verify families are all valid
     if (get.hasFamilies()) {
       for (byte [] family: get.familySet()) {
@@ -6076,6 +6081,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
         get.addFamily(family);
       }
     }
+    // 调用另一个get方法
     List<Cell> results = get(get, true);
     boolean stale = this.getRegionInfo().getReplicaId() != 0;
     return Result.create(results, get.isCheckExistenceOnly() ? !results.isEmpty() : null, stale);
@@ -6097,12 +6103,14 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
          return results;
        }
     }
-
+    // 变成scan了 ！！！
+    // get也就是一种特殊的Scan的方法，它只寻找一个row的数据。
     Scan scan = new Scan(get);
 
     RegionScanner scanner = null;
     try {
       scanner = getScanner(scan);
+      // 调的nextRaw()， 直接去看nextRaw()
       scanner.next(results);
     } finally {
       if (scanner != null)
@@ -6185,7 +6193,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
   }
 
   /**
-   * Performs atomic multiple reads and writes on a given row.
+   * Performs atomic multiple reads and writes on a given row.  对给定的row进行 原子多次读写。
    *
    * @param processor The object defines the reads and writes to a row.
    * @param timeout The timeout of the processor.process() execution
@@ -6202,6 +6210,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
     if (!processor.readOnly()) {
       checkReadOnly();
     }
+    // 检查是否 above memstore limit
     checkResources();
 
     startRegionOperation();
@@ -6247,7 +6256,7 @@ public class HRegion implements HeapSize, PropagatingConfigurationObserver { // 
       // 3. Region lock
       lock(this.updatesLock.readLock(), acquiredRowLocks.size() == 0 ? 1 : acquiredRowLocks.size());
       locked = true;
-      // Get a mvcc write number
+      // Get a mvcc write number    Multi-Version Concurrency Control 多版本并发控制，MVCC 是一种并发控制的方法
       mvccNum = MultiVersionConsistencyControl.getPreAssignedWriteNumber(this.sequenceId);
 
       long now = EnvironmentEdgeManager.currentTime();

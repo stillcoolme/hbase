@@ -374,8 +374,8 @@ public class MasterFileSystem {
   }
 
   /**
-   * This method is the base split method that splits WAL files matching a filter. Callers should
-   * pass the appropriate filter for meta and non-meta WALs.
+   * This method is the base split method that splits WAL files matching a filter.
+   * Callers should pass the appropriate filter for meta and non-meta WALs.
    * @param serverNames logs belonging to these servers will be split; this will rename the log
    *                    directory out from under a soft-failed server
    * @param filter
@@ -383,17 +383,18 @@ public class MasterFileSystem {
    */
   public void splitLog(final Set<ServerName> serverNames, PathFilter filter) throws IOException {
     long splitTime = 0, splitLogSize = 0;
-    List<Path> logDirs = getLogDirs(serverNames);
+    List<Path> logDirs = getLogDirs(serverNames);  //获得splitting log的path
 
     splitLogManager.handleDeadWorkers(serverNames);
     splitTime = EnvironmentEdgeManager.currentTime();
+    //发布split log任务
     splitLogSize = splitLogManager.splitLogDistributed(serverNames, logDirs, filter);
     splitTime = EnvironmentEdgeManager.currentTime() - splitTime;
 
-    if (this.metricsMasterFilesystem != null) {
-      if (filter == META_FILTER) {
+    if (this.metricsMasterFilesystem != null) { //记录split log时间，大小
+      if (filter == META_FILTER) {  //meta 表
         this.metricsMasterFilesystem.addMetaWALSplit(splitTime, splitLogSize);
-      } else {
+      } else {  //非meta 表
         this.metricsMasterFilesystem.addSplit(splitTime, splitLogSize);
       }
     }

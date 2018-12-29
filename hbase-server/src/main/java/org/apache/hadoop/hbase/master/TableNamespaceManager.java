@@ -83,6 +83,7 @@ public class TableNamespaceManager {
     if (!MetaTableAccessor.tableExists(masterServices.getConnection(),
         TableName.NAMESPACE_TABLE_NAME)) {
       LOG.info("Namespace table not found. Creating...");
+      LOG.info("CreatingNamespace ...");
       createNamespaceTable(masterServices);
     }
 

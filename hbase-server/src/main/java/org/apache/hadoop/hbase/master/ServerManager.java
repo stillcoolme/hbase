@@ -598,10 +598,13 @@ public class ServerManager {
     this.processDeadServer(serverName, false);
   }
 
+  // 提交ServerShutdownHandler到线程池
   public synchronized void processDeadServer(final ServerName serverName, boolean shouldSplitWal) {
     // When assignment manager is cleaning up the zookeeper nodes and rebuilding the
     // in-memory region states, region servers could be down. Meta table can and
-    // should be re-assigned, log splitting can be done too. However, it is better to
+    // should be re-assigned, log splitting can be done too.
+    //
+    // However, it is better to
     // wait till the cleanup is done before re-assigning user regions.
     //
     // We should not wait in the server shutdown handler thread since it can clog
